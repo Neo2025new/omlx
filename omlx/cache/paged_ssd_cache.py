@@ -317,22 +317,6 @@ class PagedSSDCacheIndex:
         with self._lock:
             return len(self._index)
 
-    def update_file_size(
-        self, block_hash: bytes, new_file_size: int, new_file_path: Optional[Path] = None
-    ) -> None:
-        """Update the file size (and optionally path) for an indexed block.
-
-        Used by the background writer to correct the estimated size after
-        the actual file has been written to disk.
-        """
-        with self._lock:
-            if block_hash in self._index:
-                meta = self._index[block_hash]
-                self._total_size += new_file_size - meta.file_size
-                meta.file_size = new_file_size
-                if new_file_path is not None:
-                    meta.file_path = new_file_path
-
     def get_all_hashes(self) -> List[bytes]:
         """Get all indexed block hashes."""
         with self._lock:
@@ -628,6 +612,15 @@ class PagedSSDCacheManager(CacheManager):
         file_path = self._get_file_path(block_hash)
 
         try:
+            # Early check: skip expensive mx.eval + save if queue is already full.
+            # This avoids wasting GPU/CPU work that would be discarded at enqueue time.
+            if self._write_queue.full():
+                logger.warning(
+                    f"SSD cache write queue full, skipping save for "
+                    f"{block_hash.hex()[:16]}"
+                )
+                return False
+
             # Enforce size limit before saving
             self._enforce_size_limit_for_new_block()
 
